@@ -9,11 +9,11 @@ import urllib.parse
 from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
 
 # ===== НАСТРОЙКИ =====
-TOKEN = "8394148154:AAE_5bdZYtdFsQTIfxGE5EydI0O9OLU5vJU"  # Твой токен
-BOT_USERNAME = "TREYD_GPPROJECT_bot"                      # Юзернейм бота (без @)
-STEAM_COMMISSION = 0.13                                    # Комиссия Steam 13%
-CHECK_INTERVAL = 600                                       # Проверка каждые 10 минут
-ITEMS_FILE = "items.json"                                  # Файл для хранения данных
+TOKEN = "8394148154:AAE_5bdZYtdFsQTIfxGE5EydI0O9OLU5vJU"
+BOT_USERNAME = "TREYD_GPPROJECT_bot"
+STEAM_COMMISSION = 0.13
+CHECK_INTERVAL = 600
+ITEMS_FILE = "items.json"
 # =====================
 
 bot = telebot.TeleBot(TOKEN)
@@ -89,15 +89,9 @@ def get_referral_link(user_id):
 def referral_command(message):
     user_id = message.from_user.id
     link = get_referral_link(user_id)
-    items = load_items()
-    referrals = 0
-    for item in items:
-        if item.get("referred_by") == user_id:
-            referrals += 1
     bot.reply_to(message,
         f"🔗 **Твоя реферальная ссылка:**\n{link}\n\n"
-        f"📊 Приглашено друзей: {referrals}\n"
-        f"За каждого друга ты получаешь +1 в рейтинг (пока просто счётчик).",
+        f"Отправляй её друзьям!",
         parse_mode="Markdown"
     )
 
@@ -325,7 +319,6 @@ def monitor():
                 sell = res["sell"]
                 buy = res["buy"]
                 profit = res["profit"]
-                # Уведомление о выгодной покупке
                 if profit > 0:
                     if last_notified:
                         last_time = datetime.fromisoformat(last_notified)
@@ -340,7 +333,6 @@ def monitor():
                         msg = f"💰 **ВЫГОДНО!** {name}\nПродажа: {sell:.2f}$, Покупка: {buy:.2f}$, Прибыль: {profit:.2f}$"
                         bot.send_message(chat_id, msg, parse_mode="Markdown")
                         entry["last_notified"] = now
-                # Уведомление об изменении цены
                 if last_sell is not None and last_buy is not None:
                     sell_change = abs((sell - last_sell) / last_sell) * 100
                     buy_change = abs((buy - last_buy) / last_buy) * 100
