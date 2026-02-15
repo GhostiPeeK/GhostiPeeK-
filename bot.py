@@ -71,11 +71,9 @@ def check_item(item_name):
 # ---------- Реферальная система ----------
 def get_referral_link(user_id):
     items = load_items()
-    # Ищем, есть ли уже запись о пользователе
     for item in items:
         if item.get("user_id") == user_id:
             return f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
-    # Если нет — создаём
     items.append({
         "user_id": user_id,
         "referrals": 0,
@@ -91,7 +89,6 @@ def get_referral_link(user_id):
 def referral_command(message):
     user_id = message.from_user.id
     link = get_referral_link(user_id)
-    # Считаем количество приглашённых
     items = load_items()
     referrals = 0
     for item in items:
@@ -107,7 +104,6 @@ def referral_command(message):
 # ---------- Калькулятор ----------
 @bot.message_handler(commands=['calc'])
 def calc_command(message):
-    # Разбиваем максимум на 3 части: команда, название, количество
     parts = message.text.split(maxsplit=2)
     if len(parts) < 3:
         bot.reply_to(message, "❌ Пример: /calc AK-47 | Redline (Field-Tested) 5")
@@ -167,12 +163,10 @@ def add_from_popular(call):
         bot.send_message(call.message.chat.id, f"❌ Не удалось найти скин {skin_name}")
         return
     items = load_items()
-    # Проверяем, есть ли уже у пользователя этот скин
     for item in items:
         if item.get("user_id") == call.from_user.id and item.get("item_name") == skin_name:
             bot.send_message(call.message.chat.id, "⚠️ Уже есть в списке")
             return
-    # Добавляем
     items.append({
         "user_id": call.from_user.id,
         "item_name": skin_name,
@@ -183,18 +177,16 @@ def add_from_popular(call):
     save_items(items)
     bot.send_message(call.message.chat.id, f"✅ Скин {skin_name} добавлен в список!")
 
-# ---------- Обработка /start (с реферальной логикой) ----------
+# ---------- Обработка /start ----------
 @bot.message_handler(commands=['start'])
 def start_with_referral(message):
     user_id = message.from_user.id
     args = message.text.split()
-    # Если есть параметр start с реферальным кодом
     if len(args) > 1 and args[1].startswith("ref_"):
         try:
             referrer_id = int(args[1].split("_")[1])
             if referrer_id != user_id:
                 items = load_items()
-                # Ищем пользователя в базе, обновляем referred_by
                 found = False
                 for item in items:
                     if item.get("user_id") == user_id:
@@ -213,18 +205,46 @@ def start_with_referral(message):
                 save_items(items)
         except:
             pass
-    # Отправляем приветствие
     bot.reply_to(message,
         "🤖 **CS2 Трейдинг Бот**\n\n"
+        "/add <название> — добавить скин в список\n"
         "/check <название> — разовая проверка\n"
         "/calc <название> <количество> — калькулятор прибыли\n"
         "/popular — выбрать из популярных скинов\n"
         "/referral — получить реферальную ссылку\n"
         "/list — показать список\n"
         "/remove <номер> — удалить из списка\n\n"
-        "Пример: /check AK-47 | Redline (Field-Tested)",
+        "Пример: /add AK-47 | Redline (Field-Tested)",
         parse_mode="Markdown"
     )
+
+# ---------- Команда /add ----------
+@bot.message_handler(commands=['add'])
+def add_cmd(message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.reply_to(message, "❌ Укажи название скина после /add")
+        return
+    name = parts[1].strip()
+    bot.reply_to(message, f"🔍 Проверяю существование скина: {name}...")
+    sell, buy = get_steam_price(name)
+    if sell is None or buy is None:
+        bot.reply_to(message, "❌ Не удалось найти такой скин.")
+        return
+    items = load_items()
+    for item in items:
+        if item.get("user_id") == message.from_user.id and item.get("item_name") == name:
+            bot.reply_to(message, "⚠️ Уже есть в списке")
+            return
+    items.append({
+        "user_id": message.from_user.id,
+        "item_name": name,
+        "last_notified": None,
+        "last_sell": sell,
+        "last_buy": buy
+    })
+    save_items(items)
+    bot.reply_to(message, f"✅ Скин {name} добавлен в список!")
 
 # ---------- Команда /check ----------
 @bot.message_handler(commands=['check'])
@@ -253,7 +273,7 @@ def check_cmd(message):
 @bot.message_handler(commands=['list'])
 def list_cmd(message):
     items = load_items()
-    user_items = [item for item in items if item.get("user_id") == message.from_user.id]
+    user_items = [item for item in items if item.get("user_id") == message.from_user.id and item.get("item_name")]
     if not user_items:
         bot.reply_to(message, "📭 Список пуст")
         return
@@ -270,7 +290,7 @@ def remove_cmd(message):
         bot.reply_to(message, "❌ Укажи номер скина из списка")
         return
     items = load_items()
-    user_items = [item for item in items if item.get("user_id") == message.from_user.id]
+    user_items = [item for item in items if item.get("user_id") == message.from_user.id and item.get("item_name")]
     try:
         idx = int(parts[1].strip()) - 1
         if 0 <= idx < len(user_items):
@@ -290,7 +310,6 @@ def monitor():
             items = load_items()
             now = datetime.now().isoformat()
             for entry in items:
-                # Пропускаем записи без скина (это могут быть просто пользователи)
                 if not entry.get("item_name"):
                     continue
                 chat_id = entry.get("user_id")
@@ -312,7 +331,7 @@ def monitor():
                         last_time = datetime.fromisoformat(last_notified)
                         hours_passed = (datetime.now() - last_time).total_seconds() / 3600
                         if hours_passed < 6:
-                            pass  # Не спамим
+                            pass
                         else:
                             msg = f"💰 **ВЫГОДНО!** {name}\nПродажа: {sell:.2f}$, Покупка: {buy:.2f}$, Прибыль: {profit:.2f}$"
                             bot.send_message(chat_id, msg, parse_mode="Markdown")
@@ -321,26 +340,23 @@ def monitor():
                         msg = f"💰 **ВЫГОДНО!** {name}\nПродажа: {sell:.2f}$, Покупка: {buy:.2f}$, Прибыль: {profit:.2f}$"
                         bot.send_message(chat_id, msg, parse_mode="Markdown")
                         entry["last_notified"] = now
-                # Уведомление об изменении цены (порог 5%)
+                # Уведомление об изменении цены
                 if last_sell is not None and last_buy is not None:
                     sell_change = abs((sell - last_sell) / last_sell) * 100
                     buy_change = abs((buy - last_buy) / last_buy) * 100
                     if sell_change >= 5 or buy_change >= 5:
                         msg = f"🔔 **Изменение цены** для {name}\nБыло: {last_sell:.2f}$ / {last_buy:.2f}$, Стало: {sell:.2f}$ / {buy:.2f}$"
                         bot.send_message(chat_id, msg, parse_mode="Markdown")
-                # Обновляем сохранённые цены
                 entry["last_sell"] = sell
                 entry["last_buy"] = buy
-                time.sleep(2)  # Пауза между проверками
+                time.sleep(2)
             save_items(items)
         except Exception as e:
             print(f"⚠️ Ошибка в monitor: {e}")
         time.sleep(CHECK_INTERVAL)
 
-# Запуск фонового потока
 threading.Thread(target=monitor, daemon=True).start()
 
-# ---------- Запуск ----------
 if __name__ == "__main__":
     print("✅ Бот с рефералкой и калькулятором запущен!")
     bot.infinity_polling()
