@@ -320,4 +320,60 @@ if __name__ == "__main__":
     print("✅ Бот с уведомлениями об изменении цен запущен!")
     print(f"⏱️ Интервал проверки: {CHECK_INTERVAL//60} минут")
     print(f"📊 Порог изменения цены: {PRICE_CHANGE_THRESHOLD}%")
+
     bot.infinity_polling()
+    from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+
+# Список популярных скинов (можно расширить)
+POPULAR_SKINS = [
+    "AK-47 | Redline (Field-Tested)",
+    "AWP | Asiimov (Field-Tested)",
+    "M4A1-S | Hyper Beast (Minimal Wear)",
+    "Desert Eagle | Code Red (Minimal Wear)",
+    "USP-S | Kill Confirmed (Minimal Wear)",
+    "★ Butterfly Knife | Crimson Web (Field-Tested)",
+    "★ Karambit | Doppler (Factory New)",
+    "M4A4 | Howl (Factory New)",
+    "AWP | Dragon Lore (Field-Tested)",
+    "Glock-18 | Water Elemental (Minimal Wear)"
+]
+
+@bot.message_handler(commands=['popular'])
+def popular_skins(message):
+    markup = InlineKeyboardMarkup(row_width=2)
+    buttons = []
+    for skin in POPULAR_SKINS:
+        # Кнопка с названием скина, callback_data содержит название
+        buttons.append(InlineKeyboardButton(skin, callback_data=f"add_{skin}"))
+    markup.add(*buttons)
+    bot.send_message(message.chat.id, "🔥 Популярные скины. Нажми, чтобы добавить в отслеживание:", reply_markup=markup)
+
+# Обработчик нажатий на inline-кнопки
+@bot.callback_query_handler(func=lambda call: call.data.startswith("add_"))
+def add_from_popular(call):
+    skin_name = call.data[4:]  # убираем "add_"
+    # Здесь нужно вызвать ту же логику, что и в команде /add
+    # Проверяем существование скина и добавляем
+    bot.answer_callback_query(call.id, f"Добавляю {skin_name}...")
+    # Можно скопировать код из add_cmd, адаптировав под callback
+    # Для простоты я покажу минимальный вариант:
+    # Сначала проверяем цену
+    sell, buy = get_steam_price(skin_name)  # предполагается, что функция get_steam_price уже есть
+    if sell is None or buy is None:
+        bot.send_message(call.message.chat.id, f"❌ Не удалось найти скин {skin_name}")
+        return
+    items = load_items()
+    # Проверяем, есть ли уже такой скин у пользователя
+    for item in items:
+        if item["chat_id"] == call.message.chat.id and item["item_name"] == skin_name:
+            bot.send_message(call.message.chat.id, "⚠️ Уже есть в списке")
+            return
+    items.append({
+        "chat_id": call.message.chat.id,
+        "item_name": skin_name,
+        "last_notified": None,
+        "last_sell": sell,
+        "last_buy": buy
+    })
+    save_items(items)
+    bot.send_message(call.message.chat.id, f"✅ Скин {skin_name} добавлен в список!")
