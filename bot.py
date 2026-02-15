@@ -377,3 +377,115 @@ def add_from_popular(call):
     })
     save_items(items)
     bot.send_message(call.message.chat.id, f"✅ Скин {skin_name} добавлен в список!")
+import json
+import random
+import string
+
+# ---------- Реферальная система ----------
+def get_referral_link(user_id):
+    """Генерирует или возвращает существующую реферальную ссылку"""
+    items = load_items()
+    for item in items:
+        if item.get("user_id") == user_id:
+            return f"https://t.me/твой_бот?start=ref_{user_id}"
+    
+    # Если пользователя ещё нет в базе, добавляем
+    items.append({
+        "user_id": user_id,
+        "referrals": 0,
+        "last_notified": None,
+        "last_sell": None,
+        "last_buy": None
+    })
+    save_items(items)
+    return f"https://t.me/твой_бот?start=ref_{user_id}"
+
+@bot.message_handler(commands=['referral'])
+def referral_command(message):
+    user_id = message.from_user.id
+    link = get_referral_link(user_id)
+    
+    # Считаем количество приглашённых
+    items = load_items()
+    referrals = 0
+    for item in items:
+        if item.get("referred_by") == user_id:
+            referrals += 1
+    
+    bot.reply_to(message,
+        f"🔗 **Твоя реферальная ссылка:**\n{link}\n\n"
+        f"📊 Приглашено друзей: {referrals}\n"
+        f"За каждого друга ты получаешь +1 в рейтинг (пока просто счётчик)."
+    , parse_mode="Markdown")
+
+# Обработка перехода по реферальной ссылке
+@bot.message_handler(commands=['start'])
+def start_with_referral(message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    
+    # Проверяем, есть ли реферальный код
+    if len(args) > 1 and args[1].startswith("ref_"):
+        referrer_id = int(args[1].split("_")[1])
+        if referrer_id != user_id:  # Нельзя пригласить самого себя
+            items = load_items()
+            # Отмечаем, что этот пользователь пришёл по рефералке
+            for item in items:
+                if item.get("user_id") == user_id:
+                    item["referred_by"] = referrer_id
+                    break
+            else:
+                items.append({
+                    "user_id": user_id,
+                    "referred_by": referrer_id,
+                    "referrals": 0,
+                    "last_notified": None,
+                    "last_sell": None,
+                    "last_buy": None
+                })
+            save_items(items)
+    
+    # Дальше обычный /start
+    bot.reply_to(message,
+        "🤖 **CS2 Трейдинг Бот**\n\n"
+        "/check <название> — разовая проверка\n"
+        "/popular — выбрать из популярных скинов\n"
+        "/referral — получить реферальную ссылку\n"
+        "/list — показать список\n"
+        "/remove <номер> — удалить из списка"
+    , parse_mode="Markdown")
+import re
+
+@bot.message_handler(commands=['calc'])
+def calc_command(message):
+    # Пример: /calc AK-47 | Redline (Field-Tested) 5
+    parts = message.text.split(maxsplit=2)
+    if len(parts) < 3:
+        bot.reply_to(message, "❌ Пример: /calc AK-47 | Redline (Field-Tested) 5")
+        return
+    
+    skin_name = parts[1].strip()
+    try:
+        quantity = int(parts[2].strip())
+    except ValueError:
+        bot.reply_to(message, "❌ Количество должно быть числом")
+        return
+    
+    bot.reply_to(message, f"🔍 Считаю для {skin_name} x{quantity}...")
+    sell, buy = get_steam_price(skin_name)
+    if sell is None or buy is None:
+        bot.reply_to(message, "❌ Не удалось получить цены")
+        return
+    
+    net_buy = buy * (1 - 0.13)  # комиссия Steam
+    profit_per_item = net_buy - sell
+    total_profit = profit_per_item * quantity
+    
+    msg = (
+        f"📦 {skin_name} x{quantity}\n"
+        f"🔻 Цена продажи: ${sell:.2f}\n"
+        f"🔺 Цена покупки: ${buy:.2f}\n"
+        f"💰 Прибыль с одного: ${profit_per_item:.2f}\n"
+        f"💵 **Общая прибыль: ${total_profit:.2f}**"
+    )
+    bot.send_message(message.chat.id, msg, parse_mode="Markdown")
