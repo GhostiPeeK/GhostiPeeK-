@@ -6,7 +6,7 @@ import threading
 import time
 from datetime import datetime
 import urllib.parse
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
 
 # ===== НАСТРОЙКИ =====
 TOKEN = "8394148154:AAE_5bdZYtdFsQTIfxGE5EydI0O9OLU5vJU"
@@ -23,16 +23,15 @@ def load_items():
     try:
         with open(ITEMS_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
-    except:
+    except (FileNotFoundError, json.JSONDecodeError):
         return []
 
 def save_items(items):
     with open(ITEMS_FILE, "w", encoding="utf-8") as f:
         json.dump(items, f, ensure_ascii=False, indent=2)
 
-# ---------- Получение цен через Steam API ----------
+# ---------- Получение цен ----------
 def get_steam_price(item_name):
-    print(f"📡 Запрашиваю Steam API для: {item_name}")
     encoded = urllib.parse.quote(item_name)
     url = f"https://steamcommunity.com/market/priceoverview/?appid=730&currency=1&market_hash_name={encoded}"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -47,85 +46,107 @@ def get_steam_price(item_name):
         if not lowest:
             return None, None
         sell_match = re.search(r'\$([0-9,\.]+)', lowest)
-        sell = float(sell_match.group(1).replace(',', '')) if sell_match else None
+        if not sell_match:
+            return None, None
+        sell = float(sell_match.group(1).replace(',', ''))
         median = data.get("median_price")
-        buy = None
         if median:
             buy_match = re.search(r'\$([0-9,\.]+)', median)
-            buy = float(buy_match.group(1).replace(',', '')) if buy_match else None
+            buy = float(buy_match.group(1).replace(',', '')) if buy_match else sell * 0.85
         else:
-            buy = sell * 0.85 if sell else None
+            buy = sell * 0.85
         return sell, buy
-    except Exception as e:
-        print(f"⚠️ Ошибка: {e}")
+    except Exception:
         return None, None
 
-def check_item(item_name):
-    sell, buy = get_steam_price(item_name)
-    if sell is None or buy is None:
-        return {"success": False, "error": "Нет цен"}
-    net_buy = buy * (1 - STEAM_COMMISSION)
-    profit = net_buy - sell
-    return {"success": True, "sell": sell, "buy": buy, "profit": profit, "name": item_name}
-
-# ---------- Реферальная система ----------
-def get_referral_link(user_id):
+# ---------- Реферальная система (сохраняется в items.json) ----------
+def get_referral_count(user_id):
     items = load_items()
     for item in items:
-        if item.get("user_id") == user_id:
-            return f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
-    items.append({
-        "user_id": user_id,
-        "referrals": 0,
-        "referred_by": None,
-        "last_notified": None,
-        "last_sell": None,
-        "last_buy": None
-    })
-    save_items(items)
-    return f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
+        if item.get("type") == "referral" and item.get("user_id") == user_id:
+            return item.get("count", 0)
+    return 0
 
+def add_referral(user_id, referrer_id):
+    items = load_items()
+    # Увеличиваем счётчик пригласившего
+    found = False
+    for item in items:
+        if item.get("type") == "referral" and item.get("user_id") == referrer_id:
+            item["count"] = item.get("count", 0) + 1
+            found = True
+            break
+    if not found:
+        items.append({"type": "referral", "user_id": referrer_id, "count": 1})
+    # Запоминаем, что этот пользователь был приглашён
+    items.append({"type": "referred", "user_id": user_id, "referrer": referrer_id})
+    save_items(items)
+
+def was_referred(user_id):
+    items = load_items()
+    for item in items:
+        if item.get("type") == "referred" and item.get("user_id") == user_id:
+            return True
+    return False
+
+# ---------- Меню ----------
+def main_menu():
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(
+        KeyboardButton("🔥 Популярные"),
+        KeyboardButton("📋 Мои скины"),
+        KeyboardButton("🔗 Рефералка"),
+        KeyboardButton("🔍 Проверить скин"),
+        KeyboardButton("➕ Добавить скин"),
+        KeyboardButton("🧮 Калькулятор")
+    )
+    return markup
+
+# ---------- ОСНОВНЫЕ КОМАНДЫ (объявлены до общего обработчика) ----------
+
+# ------------------ /start ------------------
+@bot.message_handler(commands=['start'])
+def start_command(message):
+    user_id = message.from_user.id
+    args = message.text.split()
+    # Обработка реферального перехода
+    if len(args) > 1 and args[1].startswith("ref_"):
+        try:
+            referrer_id = int(args[1].split("_")[1])
+            if referrer_id != user_id and not was_referred(user_id):
+                add_referral(user_id, referrer_id)
+                bot.reply_to(message, "✅ Ты перешёл по реферальной ссылке! Спасибо.")
+        except:
+            pass
+    # Приветствие с меню
+    bot.send_message(
+        message.chat.id,
+        "<b>🤖 CS2 Трейдинг Бот</b>\n\n"
+        "Используй кнопки ниже или команды:\n"
+        "/add <название>\n"
+        "/check <название>\n"
+        "/calc <название> <число>\n"
+        "/popular\n"
+        "/referral\n"
+        "/list\n"
+        "/remove <номер>",
+        parse_mode="HTML",
+        reply_markup=main_menu()
+    )
+
+# ------------------ /referral ------------------
 @bot.message_handler(commands=['referral'])
 def referral_command(message):
     user_id = message.from_user.id
-    link = get_referral_link(user_id)
-    bot.reply_to(message,
-        f"🔗 **Твоя реферальная ссылка:**\n{link}\n\n"
-        f"Отправляй её друзьям!",
-        parse_mode="Markdown"
+    count = get_referral_count(user_id)
+    link = f"https://t.me/{BOT_USERNAME}?start=ref_{user_id}"
+    bot.send_message(
+        message.chat.id,
+        f"🔗 <b>Твоя реферальная ссылка:</b>\n{link}\n\nПриглашено друзей: {count}",
+        parse_mode="HTML"
     )
 
-# ---------- Калькулятор ----------
-@bot.message_handler(commands=['calc'])
-def calc_command(message):
-    parts = message.text.split(maxsplit=2)
-    if len(parts) < 3:
-        bot.reply_to(message, "❌ Пример: /calc AK-47 | Redline (Field-Tested) 5")
-        return
-    skin_name = parts[1].strip()
-    try:
-        quantity = int(parts[2].strip())
-    except ValueError:
-        bot.reply_to(message, "❌ Количество должно быть числом")
-        return
-    bot.reply_to(message, f"🔍 Считаю для {skin_name} x{quantity}...")
-    sell, buy = get_steam_price(skin_name)
-    if sell is None or buy is None:
-        bot.reply_to(message, "❌ Не удалось получить цены")
-        return
-    net_buy = buy * (1 - STEAM_COMMISSION)
-    profit_per_item = net_buy - sell
-    total_profit = profit_per_item * quantity
-    msg = (
-        f"📦 {skin_name} x{quantity}\n"
-        f"🔻 Цена продажи: ${sell:.2f}\n"
-        f"🔺 Цена покупки: ${buy:.2f}\n"
-        f"💰 Прибыль с одного: ${profit_per_item:.2f}\n"
-        f"💵 **Общая прибыль: ${total_profit:.2f}**"
-    )
-    bot.send_message(message.chat.id, msg, parse_mode="Markdown")
-
-# ---------- Популярные скины ----------
+# ------------------ /popular ------------------
 POPULAR_SKINS = [
     "AK-47 | Redline (Field-Tested)",
     "AWP | Asiimov (Field-Tested)",
@@ -142,11 +163,9 @@ POPULAR_SKINS = [
 @bot.message_handler(commands=['popular'])
 def popular_skins(message):
     markup = InlineKeyboardMarkup(row_width=2)
-    buttons = []
-    for skin in POPULAR_SKINS:
-        buttons.append(InlineKeyboardButton(skin, callback_data=f"add_{skin}"))
+    buttons = [InlineKeyboardButton(skin, callback_data=f"add_{skin}") for skin in POPULAR_SKINS]
     markup.add(*buttons)
-    bot.send_message(message.chat.id, "🔥 Популярные скины. Нажми, чтобы добавить в отслеживание:", reply_markup=markup)
+    bot.send_message(message.chat.id, "🔥 Популярные скины. Нажми, чтобы добавить:", reply_markup=markup)
 
 @bot.callback_query_handler(func=lambda call: call.data.startswith("add_"))
 def add_from_popular(call):
@@ -158,10 +177,11 @@ def add_from_popular(call):
         return
     items = load_items()
     for item in items:
-        if item.get("user_id") == call.from_user.id and item.get("item_name") == skin_name:
+        if item.get("type") == "skin" and item.get("user_id") == call.from_user.id and item.get("item_name") == skin_name:
             bot.send_message(call.message.chat.id, "⚠️ Уже есть в списке")
             return
     items.append({
+        "type": "skin",
         "user_id": call.from_user.id,
         "item_name": skin_name,
         "last_notified": None,
@@ -169,68 +189,140 @@ def add_from_popular(call):
         "last_buy": buy
     })
     save_items(items)
-    bot.send_message(call.message.chat.id, f"✅ Скин {skin_name} добавлен в список!")
+    bot.send_message(call.message.chat.id, f"✅ Скин {skin_name} добавлен!")
 
-# ---------- Обработка /start ----------
-@bot.message_handler(commands=['start'])
-def start_with_referral(message):
-    user_id = message.from_user.id
-    args = message.text.split()
-    if len(args) > 1 and args[1].startswith("ref_"):
-        try:
-            referrer_id = int(args[1].split("_")[1])
-            if referrer_id != user_id:
-                items = load_items()
-                found = False
-                for item in items:
-                    if item.get("user_id") == user_id:
-                        item["referred_by"] = referrer_id
-                        found = True
-                        break
-                if not found:
-                    items.append({
-                        "user_id": user_id,
-                        "referrals": 0,
-                        "referred_by": referrer_id,
-                        "last_notified": None,
-                        "last_sell": None,
-                        "last_buy": None
-                    })
-                save_items(items)
-        except:
-            pass
-    bot.reply_to(message,
-        "🤖 **CS2 Трейдинг Бот**\n\n"
-        "/add <название> — добавить скин в список\n"
-        "/check <название> — разовая проверка\n"
-        "/calc <название> <количество> — калькулятор прибыли\n"
-        "/popular — выбрать из популярных скинов\n"
-        "/referral — получить реферальную ссылку\n"
-        "/list — показать список\n"
-        "/remove <номер> — удалить из списка\n\n"
-        "Пример: /add AK-47 | Redline (Field-Tested)",
-        parse_mode="Markdown"
-    )
+# ------------------ /list ------------------
+@bot.message_handler(commands=['list'])
+def list_cmd(message):
+    items = load_items()
+    user_skins = [item for item in items if item.get("type") == "skin" and item.get("user_id") == message.from_user.id]
+    if not user_skins:
+        bot.send_message(message.chat.id, "📭 Список пуст")
+        return
+    lines = ["📋 <b>Твои скины:</b>"]
+    for i, s in enumerate(user_skins, 1):
+        lines.append(f"{i}. {s['item_name']}")
+    bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML")
 
-# ---------- Команда /add ----------
-@bot.message_handler(commands=['add'])
-def add_cmd(message):
+# ------------------ /remove ------------------
+@bot.message_handler(commands=['remove'])
+def remove_cmd(message):
     parts = message.text.split(maxsplit=1)
     if len(parts) < 2:
-        bot.reply_to(message, "❌ Укажи название скина после /add")
+        bot.send_message(message.chat.id, "❌ Укажи номер скина из списка")
+        return
+    try:
+        idx = int(parts[1].strip()) - 1
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Нужно указать число")
+        return
+    items = load_items()
+    user_skins = [item for item in items if item.get("type") == "skin" and item.get("user_id") == message.from_user.id]
+    if idx < 0 or idx >= len(user_skins):
+        bot.send_message(message.chat.id, "❌ Неверный номер")
+        return
+    to_remove = user_skins[idx]
+    items.remove(to_remove)
+    save_items(items)
+    bot.send_message(message.chat.id, f"✅ Скин {to_remove['item_name']} удалён")
+
+# ------------------ /check ------------------
+@bot.message_handler(commands=['check'])
+def check_cmd(message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.send_message(message.chat.id, "❌ Напиши название после /check")
         return
     name = parts[1].strip()
-    bot.reply_to(message, f"🔍 Проверяю существование скина: {name}...")
+    bot.send_message(message.chat.id, f"🔍 Ищу цены для: {name}...")
     sell, buy = get_steam_price(name)
     if sell is None or buy is None:
-        bot.reply_to(message, "❌ Не удалось найти такой скин.")
+        bot.send_message(message.chat.id, "❌ Не удалось получить цены")
+        return
+    profit = buy * (1 - STEAM_COMMISSION) - sell
+    status = "🟢 ВЫГОДНО" if profit > 0 else "🔴 НЕ ВЫГОДНО"
+    msg = f"{status}\n📦 {name}\n🔻 Продажа: ${sell:.2f}\n🔺 Покупка: ${buy:.2f}\n💰 Прибыль: ${profit:.2f}"
+    bot.send_message(message.chat.id, msg)
+
+# ------------------ /calc ------------------
+@bot.message_handler(commands=['calc'])
+def calc_command(message):
+    parts = message.text.split(maxsplit=1)
+    if len(parts) < 2:
+        bot.send_message(message.chat.id, "❌ Пример: /calc AK-47 Redline 5")
+        return
+    text = parts[1].strip()
+    match = re.search(r'(\d+)\s*$', text)
+    if not match:
+        bot.send_message(message.chat.id, "❌ Не нашёл число. Пример: /calc AK-47 Redline 5")
+        return
+    quantity = int(match.group(1))
+    skin_name = text[:match.start()].strip()
+    bot.send_message(message.chat.id, f"🔍 Считаю для {skin_name} x{quantity}...")
+    sell, buy = get_steam_price(skin_name)
+    if sell is None or buy is None:
+        bot.send_message(message.chat.id, "❌ Не удалось получить цены")
+        return
+    net_buy = buy * (1 - STEAM_COMMISSION)
+    profit_per_item = net_buy - sell
+    total = profit_per_item * quantity
+    msg = (f"📦 {skin_name} x{quantity}\n"
+           f"🔻 Продажа: ${sell:.2f}\n"
+           f"🔺 Покупка: ${buy:.2f}\n"
+           f"💰 Прибыль с одного: ${profit_per_item:.2f}\n"
+           f"💵 <b>Общая прибыль: ${total:.2f}</b>")
+    bot.send_message(message.chat.id, msg, parse_mode="HTML")
+
+# ---------- ОБЩИЙ ОБРАБОТЧИК ТЕКСТА (для кнопок) ----------
+# Он обрабатывает только сообщения, НЕ начинающиеся с '/'
+@bot.message_handler(func=lambda message: not message.text.startswith('/'))
+def handle_buttons(message):
+    text = message.text
+    if text == "🔥 Популярные":
+        popular_skins(message)
+    elif text == "📋 Мои скины":
+        list_cmd(message)
+    elif text == "🔗 Рефералка":
+        referral_command(message)
+    elif text == "🔍 Проверить скин":
+        bot.send_message(message.chat.id, "Введи название скина для проверки:")
+        bot.register_next_step_handler(message, process_check)
+    elif text == "➕ Добавить скин":
+        bot.send_message(message.chat.id, "Введи название скина для добавления:")
+        bot.register_next_step_handler(message, process_add)
+    elif text == "🧮 Калькулятор":
+        bot.send_message(message.chat.id, "Введи название скина и количество (например: AK-47 Redline 5):")
+        bot.register_next_step_handler(message, process_calc)
+    else:
+        bot.send_message(message.chat.id, "Используй кнопки меню.")
+
+# ---------- Обработчики шагов (после кнопок) ----------
+def process_check(message):
+    name = message.text.strip()
+    bot.send_message(message.chat.id, f"🔍 Ищу цены для: {name}...")
+    sell, buy = get_steam_price(name)
+    if sell is None or buy is None:
+        bot.send_message(message.chat.id, "❌ Не удалось получить цены.")
+        return
+    profit = buy * (1 - STEAM_COMMISSION) - sell
+    status = "🟢 ВЫГОДНО" if profit > 0 else "🔴 НЕ ВЫГОДНО"
+    msg = f"{status}\n📦 {name}\n🔻 Продажа: ${sell:.2f}\n🔺 Покупка: ${buy:.2f}\n💰 Прибыль: ${profit:.2f}"
+    bot.send_message(message.chat.id, msg)
+
+def process_add(message):
+    name = message.text.strip()
+    bot.send_message(message.chat.id, f"🔍 Проверяю {name}...")
+    sell, buy = get_steam_price(name)
+    if sell is None or buy is None:
+        bot.send_message(message.chat.id, "❌ Не удалось найти такой скин.")
         return
     items = load_items()
     for item in items:
-        if item.get("user_id") == message.from_user.id and item.get("item_name") == name:
-            bot.reply_to(message, "⚠️ Уже есть в списке")
+        if item.get("type") == "skin" and item.get("user_id") == message.from_user.id and item.get("item_name") == name:
+            bot.send_message(message.chat.id, "⚠️ Уже есть в списке.")
             return
     items.append({
+        "type": "skin",
         "user_id": message.from_user.id,
         "item_name": name,
         "last_notified": None,
@@ -238,64 +330,33 @@ def add_cmd(message):
         "last_buy": buy
     })
     save_items(items)
-    bot.reply_to(message, f"✅ Скин {name} добавлен в список!")
+    bot.send_message(message.chat.id, f"✅ Скин {name} добавлен!")
 
-# ---------- Команда /check ----------
-@bot.message_handler(commands=['check'])
-def check_cmd(message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(message, "❌ Напиши название после /check")
+def process_calc(message):
+    text = message.text.strip()
+    match = re.search(r'(\d+)\s*$', text)
+    if not match:
+        bot.send_message(message.chat.id, "❌ Не нашёл число. Пример: AK-47 Redline 5")
         return
-    name = parts[1].strip()
-    bot.reply_to(message, f"🔍 Ищу цены для: {name}...")
-    res = check_item(name)
-    if not res["success"]:
-        bot.reply_to(message, f"❌ {res.get('error', 'Ошибка')}")
+    quantity = int(match.group(1))
+    skin_name = text[:match.start()].strip()
+    if not skin_name:
+        bot.send_message(message.chat.id, "❌ Введи название скина перед числом")
         return
-    status = "🟢 ВЫГОДНО" if res["profit"] > 0 else "🔴 НЕ ВЫГОДНО"
-    msg = (
-        f"{status}\n"
-        f"📦 {name}\n"
-        f"🔻 Продажа: {res['sell']:.2f}$\n"
-        f"🔺 Покупка: {res['buy']:.2f}$\n"
-        f"💰 Прибыль: {res['profit']:.2f}$"
-    )
-    bot.send_message(message.chat.id, msg, parse_mode="Markdown")
-
-# ---------- Команда /list ----------
-@bot.message_handler(commands=['list'])
-def list_cmd(message):
-    items = load_items()
-    user_items = [item for item in items if item.get("user_id") == message.from_user.id and item.get("item_name")]
-    if not user_items:
-        bot.reply_to(message, "📭 Список пуст")
+    bot.send_message(message.chat.id, f"🔍 Считаю для {skin_name} x{quantity}...")
+    sell, buy = get_steam_price(skin_name)
+    if sell is None or buy is None:
+        bot.send_message(message.chat.id, "❌ Не удалось получить цены.")
         return
-    lines = ["📋 **Твои скины:**"]
-    for i, item in enumerate(user_items, 1):
-        lines.append(f"{i}. {item['item_name']}")
-    bot.reply_to(message, "\n".join(lines), parse_mode="Markdown")
-
-# ---------- Команда /remove ----------
-@bot.message_handler(commands=['remove'])
-def remove_cmd(message):
-    parts = message.text.split(maxsplit=1)
-    if len(parts) < 2:
-        bot.reply_to(message, "❌ Укажи номер скина из списка")
-        return
-    items = load_items()
-    user_items = [item for item in items if item.get("user_id") == message.from_user.id and item.get("item_name")]
-    try:
-        idx = int(parts[1].strip()) - 1
-        if 0 <= idx < len(user_items):
-            item_to_remove = user_items[idx]
-            items.remove(item_to_remove)
-            save_items(items)
-            bot.reply_to(message, f"✅ Скин удалён")
-        else:
-            bot.reply_to(message, "❌ Неверный номер")
-    except ValueError:
-        bot.reply_to(message, "❌ Нужно указать номер")
+    net_buy = buy * (1 - STEAM_COMMISSION)
+    profit_per_item = net_buy - sell
+    total = profit_per_item * quantity
+    msg = (f"📦 {skin_name} x{quantity}\n"
+           f"🔻 Продажа: ${sell:.2f}\n"
+           f"🔺 Покупка: ${buy:.2f}\n"
+           f"💰 Прибыль с одного: ${profit_per_item:.2f}\n"
+           f"💵 <b>Общая прибыль: ${total:.2f}</b>")
+    bot.send_message(message.chat.id, msg, parse_mode="HTML")
 
 # ---------- Фоновый мониторинг ----------
 def monitor():
@@ -304,21 +365,19 @@ def monitor():
             items = load_items()
             now = datetime.now().isoformat()
             for entry in items:
-                if not entry.get("item_name"):
+                if entry.get("type") != "skin":
                     continue
-                chat_id = entry.get("user_id")
+                user_id = entry.get("user_id")
                 name = entry["item_name"]
                 last_notified = entry.get("last_notified")
                 last_sell = entry.get("last_sell")
                 last_buy = entry.get("last_buy")
                 print(f"🔄 Проверяю {name}...")
-                res = check_item(name)
-                if not res["success"]:
+                sell, buy = get_steam_price(name)
+                if sell is None or buy is None:
                     time.sleep(2)
                     continue
-                sell = res["sell"]
-                buy = res["buy"]
-                profit = res["profit"]
+                profit = buy * (1 - STEAM_COMMISSION) - sell
                 if profit > 0:
                     if last_notified:
                         last_time = datetime.fromisoformat(last_notified)
@@ -326,29 +385,31 @@ def monitor():
                         if hours_passed < 6:
                             pass
                         else:
-                            msg = f"💰 **ВЫГОДНО!** {name}\nПродажа: {sell:.2f}$, Покупка: {buy:.2f}$, Прибыль: {profit:.2f}$"
-                            bot.send_message(chat_id, msg, parse_mode="Markdown")
+                            msg = f"💰 <b>ВЫГОДНО!</b> {name}\nПродажа: ${sell:.2f}, Покупка: ${buy:.2f}, Прибыль: ${profit:.2f}"
+                            bot.send_message(user_id, msg, parse_mode="HTML")
                             entry["last_notified"] = now
                     else:
-                        msg = f"💰 **ВЫГОДНО!** {name}\nПродажа: {sell:.2f}$, Покупка: {buy:.2f}$, Прибыль: {profit:.2f}$"
-                        bot.send_message(chat_id, msg, parse_mode="Markdown")
+                        msg = f"💰 <b>ВЫГОДНО!</b> {name}\nПродажа: ${sell:.2f}, Покупка: ${buy:.2f}, Прибыль: ${profit:.2f}"
+                        bot.send_message(user_id, msg, parse_mode="HTML")
                         entry["last_notified"] = now
                 if last_sell is not None and last_buy is not None:
-                    sell_change = abs((sell - last_sell) / last_sell) * 100
-                    buy_change = abs((buy - last_buy) / last_buy) * 100
+                    sell_change = abs((sell - last_sell) / last_sell) * 100 if last_sell else 0
+                    buy_change = abs((buy - last_buy) / last_buy) * 100 if last_buy else 0
                     if sell_change >= 5 or buy_change >= 5:
-                        msg = f"🔔 **Изменение цены** для {name}\nБыло: {last_sell:.2f}$ / {last_buy:.2f}$, Стало: {sell:.2f}$ / {buy:.2f}$"
-                        bot.send_message(chat_id, msg, parse_mode="Markdown")
+                        msg = f"🔔 <b>Изменение цены</b> для {name}\nБыло: {last_sell:.2f}$ / {last_buy:.2f}$, Стало: {sell:.2f}$ / {buy:.2f}$"
+                        bot.send_message(user_id, msg, parse_mode="HTML")
                 entry["last_sell"] = sell
                 entry["last_buy"] = buy
                 time.sleep(2)
             save_items(items)
         except Exception as e:
-            print(f"⚠️ Ошибка в monitor: {e}")
+            print(f"⚠️ Ошибка мониторинга: {e}")
         time.sleep(CHECK_INTERVAL)
 
 threading.Thread(target=monitor, daemon=True).start()
 
+# ---------- Запуск ----------
 if __name__ == "__main__":
-    print("✅ Бот с рефералкой и калькулятором запущен!")
+    print("✅ Бот с меню, рефералкой и калькулятором запущен!")
     bot.infinity_polling()
+
