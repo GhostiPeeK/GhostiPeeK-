@@ -1,3 +1,4 @@
+import os
 import telebot
 import requests
 import re
@@ -331,4 +332,5 @@ threading.Thread(target=monitor, daemon=True).start()
 # ---------- Запуск ----------
 if __name__ == "__main__":
     print("✅ Бот запущен!")
+
     bot.infinity_polling()
