@@ -1,0 +1,27 @@
+# Токены и секреты
+.env
+*.env
+**/*.env
+
+# Файлы с данными
+items.json
+*.json
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
