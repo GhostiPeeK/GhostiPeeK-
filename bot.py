@@ -1,4 +1,3 @@
-import os
 import telebot
 import requests
 import re
@@ -7,13 +6,15 @@ import threading
 import time
 from datetime import datetime
 import urllib.parse
-from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton
+import os
+from telebot.types import InlineKeyboardMarkup, InlineKeyboardButton, ReplyKeyboardMarkup, KeyboardButton, LabeledPrice
 
 # ===== НАСТРОЙКИ =====
 TOKEN = os.environ.get("BOT_TOKEN")  # Токен из переменной окружения
 BOT_USERNAME = "TREYD_GPPROJECT_bot"
 STEAM_COMMISSION = 0.13
 CHECK_INTERVAL = 600
+PREMIUM_CHECK_INTERVAL = 120  # для премиум-пользователей (2 минуты)
 ITEMS_FILE = "items.json"
 # =====================
 
@@ -68,6 +69,61 @@ def check_item(item_name):
     profit = net_buy - sell
     return {"success": True, "sell": sell, "buy": buy, "profit": profit, "name": item_name}
 
+# ---------- Премиум система ----------
+def is_premium(user_id):
+    items = load_items()
+    for item in items:
+        if item.get("type") == "premium" and item.get("user_id") == user_id:
+            return True
+    return False
+
+def add_premium(user_id):
+    items = load_items()
+    # Удаляем старую запись, если есть
+    items = [item for item in items if not (item.get("type") == "premium" and item.get("user_id") == user_id)]
+    items.append({"type": "premium", "user_id": user_id})
+    save_items(items)
+
+# ---------- Профит пользователя ----------
+def add_profit(user_id, profit_amount, skin_name):
+    items = load_items()
+    # Ищем запись профита пользователя
+    profit_record = None
+    for item in items:
+        if item.get("type") == "profit" and item.get("user_id") == user_id:
+            profit_record = item
+            break
+    
+    if profit_record:
+        profit_record["total"] = profit_record.get("total", 0) + profit_amount
+        # Добавляем в историю
+        if "history" not in profit_record:
+            profit_record["history"] = []
+        profit_record["history"].append({
+            "date": datetime.now().isoformat(),
+            "skin": skin_name,
+            "profit": profit_amount
+        })
+    else:
+        items.append({
+            "type": "profit",
+            "user_id": user_id,
+            "total": profit_amount,
+            "history": [{
+                "date": datetime.now().isoformat(),
+                "skin": skin_name,
+                "profit": profit_amount
+            }]
+        })
+    save_items(items)
+
+def get_profit(user_id):
+    items = load_items()
+    for item in items:
+        if item.get("type") == "profit" and item.get("user_id") == user_id:
+            return item.get("total", 0), item.get("history", [])
+    return 0, []
+
 # ---------- Меню ----------
 def main_menu():
     markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
@@ -77,6 +133,8 @@ def main_menu():
         KeyboardButton("🔗 Рефералка"),
         KeyboardButton("🔍 Проверить скин"),
         KeyboardButton("➕ Добавить скин"),
+        KeyboardButton("💰 Профит"),
+        KeyboardButton("⭐ Премиум"),
         KeyboardButton("❓ Помощь")
     )
     return markup
@@ -113,7 +171,9 @@ def help_button(message):
         "<b>📋 Мои скины</b> — список отслеживаемых скинов\n"
         "<b>🔗 Рефералка</b> — получить реферальную ссылку\n"
         "<b>🔍 Проверить скин</b> — разовая проверка цены\n"
-        "<b>➕ Добавить скин</b> — добавить скин в отслеживание\n\n"
+        "<b>➕ Добавить скин</b> — добавить скин в отслеживание\n"
+        "<b>💰 Профит</b> — учёт прибыли от сделок\n"
+        "<b>⭐ Премиум</b> — купить премиум за Telegram Stars\n\n"
         "По всем вопросам: @GhostiPeeK_2"
     )
     bot.send_message(message.chat.id, help_text, parse_mode="HTML", reply_markup=main_menu())
@@ -272,22 +332,143 @@ def remove_cmd(message):
     save_items(items)
     bot.send_message(message.chat.id, f"✅ Скин {to_remove['item_name']} удалён", reply_markup=main_menu())
 
+# ---------- Профит ----------
+@bot.message_handler(func=lambda message: message.text == "💰 Профит")
+def profit_menu(message):
+    markup = ReplyKeyboardMarkup(resize_keyboard=True, row_width=2)
+    markup.add(
+        KeyboardButton("➕ Добавить прибыль"),
+        KeyboardButton("📊 Моя статистика"),
+        KeyboardButton("🔙 Назад")
+    )
+    bot.send_message(message.chat.id, "💰 <b>Управление профитом</b>", parse_mode="HTML", reply_markup=markup)
+
+@bot.message_handler(func=lambda message: message.text == "➕ Добавить прибыль")
+def add_profit_prompt(message):
+    msg = bot.send_message(message.chat.id, "Введи название скина и прибыль через пробел (например: AK-47 Redline 15.50):", reply_markup=back_menu())
+    bot.register_next_step_handler(msg, process_add_profit)
+
+def process_add_profit(message):
+    if message.text == "🔙 Назад":
+        go_back(message)
+        return
+    
+    parts = message.text.rsplit(maxsplit=1)
+    if len(parts) != 2:
+        bot.send_message(message.chat.id, "❌ Неправильный формат. Нужно: название скина и прибыль через пробел", reply_markup=main_menu())
+        return
+    
+    skin_name = parts[0].strip()
+    try:
+        profit = float(parts[1].strip())
+    except ValueError:
+        bot.send_message(message.chat.id, "❌ Прибыль должна быть числом", reply_markup=main_menu())
+        return
+    
+    add_profit(message.from_user.id, profit, skin_name)
+    bot.send_message(message.chat.id, f"✅ Прибыль ${profit:.2f} для скина {skin_name} добавлена!", reply_markup=main_menu())
+
+@bot.message_handler(func=lambda message: message.text == "📊 Моя статистика")
+def show_profit(message):
+    total, history = get_profit(message.from_user.id)
+    
+    if not history:
+        bot.send_message(message.chat.id, "📭 История прибыли пуста", reply_markup=main_menu())
+        return
+    
+    lines = [f"💰 <b>Общий профит: ${total:.2f}</b>\n", "📋 <b>История (последние 10):</b>"]
+    for h in history[-10:]:  # последние 10 записей
+        date = datetime.fromisoformat(h["date"]).strftime("%d.%m %H:%M")
+        lines.append(f"{date} — {h['skin']}: ${h['profit']:.2f}")
+    
+    bot.send_message(message.chat.id, "\n".join(lines), parse_mode="HTML", reply_markup=main_menu())
+
+# ---------- Премиум ----------
+@bot.message_handler(func=lambda message: message.text == "⭐ Премиум")
+def premium_info(message):
+    user_id = message.from_user.id
+    
+    if is_premium(user_id):
+        status = "✅ У вас уже есть премиум! (бессрочно)"
+        markup = main_menu()
+    else:
+        status = "❌ У вас нет премиума"
+        markup = InlineKeyboardMarkup()
+        markup.add(InlineKeyboardButton("💎 Купить премиум за 50 ⭐", callback_data="buy_premium"))
+    
+    info = (
+        f"<b>⭐ Премиум доступ</b>\n\n"
+        f"{status}\n\n"
+        "<b>Преимущества:</b>\n"
+        "• Проверка цен каждые 2 минуты (вместо 10)\n"
+        "• Приоритетные уведомления\n"
+        "• Поддержка автора 💙\n\n"
+        "Цена: <b>50 Telegram Stars</b> (навсегда)"
+    )
+    
+    bot.send_message(message.chat.id, info, parse_mode="HTML", reply_markup=markup)
+
+@bot.callback_query_handler(func=lambda call: call.data == "buy_premium")
+def buy_premium(call):
+    user_id = call.from_user.id
+    
+    if is_premium(user_id):
+        bot.answer_callback_query(call.id, "У вас уже есть премиум!")
+        return
+    
+    # Создаём инвойс на 50 звёзд
+    prices = [LabeledPrice(label="Премиум навсегда", amount=50)]
+    
+    bot.send_invoice(
+        call.message.chat.id,
+        title="⭐ Премиум доступ",
+        description="Преимущества: ускоренная проверка цен (2 минуты), приоритетные уведомления",
+        invoice_payload="premium_purchase",
+        provider_token="",  # Для звёзд оставляем пустым
+        currency="XTR",      # XTR = Telegram Stars
+        prices=prices,
+        start_parameter="premium"
+    )
+
+@bot.pre_checkout_query_handler(func=lambda query: True)
+def pre_checkout(pre_checkout_q):
+    bot.answer_pre_checkout_query(pre_checkout_q.id, ok=True)
+
+@bot.message_handler(content_types=['successful_payment'])
+def successful_payment(message):
+    user_id = message.from_user.id
+    add_premium(user_id)
+    bot.send_message(
+        message.chat.id,
+        "🎉 Поздравляю! Премиум активирован навсегда!\n"
+        "Теперь цены будут проверяться каждые 2 минуты, а уведомления приходить мгновенно.",
+        reply_markup=main_menu()
+    )
+
 # ---------- Фоновый мониторинг ----------
 def monitor():
     while True:
         try:
             items = load_items()
             now = datetime.now().isoformat()
+            
             for entry in items:
                 if not entry.get("item_name"):
                     continue
+                
                 user_id = entry.get("user_id")
                 name = entry["item_name"]
                 last_notified = entry.get("last_notified")
                 last_sell = entry.get("last_sell")
                 last_buy = entry.get("last_buy")
                 
-                print(f"🔄 Проверяю {name}...")
+                # Определяем интервал проверки для пользователя
+                if is_premium(user_id):
+                    interval = PREMIUM_CHECK_INTERVAL
+                else:
+                    interval = CHECK_INTERVAL
+                
+                print(f"🔄 Проверяю {name} для пользователя {user_id}...")
                 sell, buy = get_steam_price(name)
                 if sell is None or buy is None:
                     time.sleep(2)
@@ -295,7 +476,6 @@ def monitor():
                 
                 profit = buy * (1 - STEAM_COMMISSION) - sell
                 
-                # Уведомление о выгодной покупке
                 if profit > 0:
                     if last_notified:
                         last_time = datetime.fromisoformat(last_notified)
@@ -311,7 +491,6 @@ def monitor():
                         bot.send_message(user_id, msg, parse_mode="HTML")
                         entry["last_notified"] = now
                 
-                # Уведомление об изменении цены (порог 5%)
                 if last_sell is not None and last_buy is not None:
                     sell_change = abs((sell - last_sell) / last_sell) * 100 if last_sell else 0
                     buy_change = abs((buy - last_buy) / last_buy) * 100 if last_buy else 0
@@ -329,8 +508,6 @@ def monitor():
 
 threading.Thread(target=monitor, daemon=True).start()
 
-# ---------- Запуск ----------
 if __name__ == "__main__":
-    print("✅ Бот запущен!")
-
+    print("✅ Бот с профитом и премиумом запущен!")
     bot.infinity_polling()
